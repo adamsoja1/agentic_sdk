@@ -46,6 +46,7 @@ class Agent:
     tool_auto_choice: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
     output_format: Any = None  
+    
 
 
     def __post_init__(self):
@@ -87,37 +88,11 @@ class Agent:
         schemas = [t.to_openai_schema() for t in self.tools.values()]
         return schemas
 
-    @staticmethod
-    def _delegation_tool_schema() -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "delegate_to_agent",
-                "description": (
-                    "Delegate a sub-task to another agent in the crew. "
-                    "Use this when a task is better handled by a specialist agent."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "agent_name": {
-                            "type": "string",
-                            "description": "Name of the target agent.",
-                        },
-                        "task": {
-                            "type": "string",
-                            "description": "The exact task description to send to the target agent.",
-                        },
-                    },
-                    "required": ["agent_name", "task"],
-                },
-            },
-        }
-
     def _system_messages(self) -> list[dict[str, Any]]:
         msgs: list[dict[str, Any]] = []
         if self.conversation.system_prompt:
             msgs.append({"role": "system", "content": self.conversation.system_prompt})
+
         if self.crew and self.can_delegate:
             agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
             crew_hint = (
