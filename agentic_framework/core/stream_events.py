@@ -37,10 +37,11 @@ class DelegationEvent(StreamEvent):
     task: str
 
 @dataclass
-class AskAgentEvent(StreamEvent):
+class AskAgentEventResult(StreamEvent):
     """This agent is asking another agent for information."""
     target_agent: str
     question: str
+    result: str
 
 
 @dataclass

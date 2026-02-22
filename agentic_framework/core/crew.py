@@ -16,6 +16,7 @@ class Crew:
     agents: list[Agent]
     entrypoint_agent: Agent
     delegate_to_agent: bool = True
+    only_ask_for_info: bool = False
     shared_knowledge: bool = True
     shared_identity: bool = False
     conversation: Conversation = field(default_factory=Conversation)
@@ -74,7 +75,6 @@ class Crew:
                         )
                     current_agent = self.get_agent_by_name(event.target_agent)
                     break
-
-
+                
             if not self.delegate_to_agent:
                 break

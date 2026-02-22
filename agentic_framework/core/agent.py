@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from .conversation import Conversation
 from ..tools.base import BaseTool
 from ..core.stream_events import (
+    AskAgentEventResult,
     DelegationEvent,
     ErrorEvent,
     FinalAnswerEvent,
@@ -46,7 +47,6 @@ class Agent:
     tool_auto_choice: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
     output_format: Any = None  
-    
 
 
     def __post_init__(self):
@@ -56,11 +56,18 @@ class Agent:
 
     def add_tool(self, tool: BaseTool|Agent):
         if isinstance(tool, Agent):
-            tool = BaseTool(
-                name=f"delegate_to_agent_{tool.name}",
-                description=tool.description,
-                func=lambda task, target_agent=tool.name: self._delegate(target_agent, task),
-            )
+            if self.crew.only_ask_for_info or not self.can_delegate:
+                tool = BaseTool(
+                    name=f"ask_agent_{tool.name}",
+                    description=tool.description,
+                    func=lambda question, target_agent=tool.name: self._ask_agent(target_agent, question),
+                )
+            else:
+                tool = BaseTool(
+                    name=f"delegate_to_agent_{tool.name}",
+                    description=tool.description,
+                    func=lambda task, target_agent=tool.name: self._delegate(target_agent, task),
+                )
             
         self.tools[tool.name] = tool
 
@@ -93,7 +100,7 @@ class Agent:
         if self.conversation.system_prompt:
             msgs.append({"role": "system", "content": self.conversation.system_prompt})
 
-        if self.crew and self.can_delegate:
+        if self.crew and self.can_delegate and not self.crew.only_ask_for_info:
             agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
             crew_hint = (
                 f"\nYou are part of a crew. "
@@ -104,6 +111,18 @@ class Agent:
                 msgs[0]["content"] += crew_hint
             else:
                 msgs.append({"role": "system", "content": crew_hint.strip()})
+        if self.crew and self.crew.only_ask_for_info:
+            agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
+            info_hint = (
+                f"\nYou can ask other specialists for help. "
+                f"Other available agents: [{agent_list}]. "
+                "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
+            )
+            
+            if msgs:
+                msgs[0]["content"] += info_hint
+            else:
+                msgs.append({"role": "system", "content": info_hint.strip()})
         return msgs
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -127,6 +146,18 @@ class Agent:
 
         yield DelegationEvent(agent_name=self.name, target_agent=target_name, task=task)
 
+    async def _ask_agent(self, target_name: str, question: str) -> AsyncGenerator[StreamEvent, None]:
+        if self.crew is None:
+            yield ErrorEvent(agent_name=self.name, error="Agent is not part of a crew; cannot ask other agents.")
+            return
+
+        target = next((a for a in self.crew.agents if a.name == target_name), None)
+        result = await target.invoke(question) if target else f"Error: Unknown agent '{target_name}'"
+        if target is None:
+            yield ErrorEvent(agent_name=self.name, error=f"Unknown agent '{target_name}' in crew.")
+            return
+
+        yield AskAgentEventResult(agent_name=self.name, target_agent=target_name, question=question, result=result)
 
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
@@ -231,6 +262,17 @@ class Agent:
                     async for event in self._delegate(target_name, task):
                         yield event
                     tool_result = delegation_result or f"Delegation to {target_name} completed."
+                    is_error = False
+                    
+                if tool_name.startswith("ask_agent_"):
+                    target_name = tool_name.replace("ask_agent_", "")
+                    question = arguments.get("question", "")
+                    ask_result = ""
+                    async for event in self._ask_agent(target_name, question):
+                        if isinstance(event, AskAgentEventResult):
+                            ask_result += event.result
+                        yield event
+                    tool_result = ask_result or f"Asked {target_name} for information."
                     is_error = False
                 else:
                     try:
