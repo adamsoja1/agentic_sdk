@@ -13,3 +13,4 @@ litellm
 openai>=1.0.0
 ollama
 langchain-ollama
+jupyterlab

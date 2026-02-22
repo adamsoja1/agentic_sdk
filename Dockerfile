@@ -7,7 +7,7 @@ WORKDIR /app
 # Install build deps and pip packages
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install 'crewai[tools]'
+
 
 # Copy source
 COPY . .
