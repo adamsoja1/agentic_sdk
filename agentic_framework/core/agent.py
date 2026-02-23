@@ -186,6 +186,37 @@ class Agent:
         if self.system_prompt:
             self.system_prompt += "\n" + limit_warning
 
+    @staticmethod
+    def _parse_tool_arguments(raw: str) -> dict[str, Any]:
+        """
+        Parse tool call arguments from a raw JSON string produced by the LLM.
+
+        Local/smaller models (e.g. Ollama) sometimes emit extra content after
+        a valid JSON object — e.g. two concatenated objects, or a trailing
+        comment.  The json.JSONDecodeError.pos attribute tells us exactly where
+        the first complete value ended, so we can truncate and retry before
+        giving up.
+
+        Raises json.JSONDecodeError if the string cannot be recovered.
+        """
+        raw = raw.strip() if raw else "{}"
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # "Extra data" means a valid JSON value was followed by junk.
+            # Truncate at exc.pos and retry once.
+            if "Extra data" in str(exc) and exc.pos > 0:
+                truncated = raw[: exc.pos]
+                logger.warning(
+                    "Truncating malformed tool arguments at pos %d (original length %d). "
+                    "Truncated: %r",
+                    exc.pos,
+                    len(raw),
+                    truncated,
+                )
+                return json.loads(truncated)  # may raise again — caller handles it
+            raise
+
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
             yield ErrorEvent(agent_name=self.name, error="No OpenAI client configured.")
@@ -247,8 +278,8 @@ class Agent:
                             acc["id"] = tc.id
                         if tc.function:
                             if tc.function.name:
-                                # FIX: only set name if not yet set — name arrives once per tool call index
-                                # never append; two tools called in parallel have different indices
+                                # Only set name if not yet set — name arrives once per tool call index;
+                                # never append — two tools called in parallel have different indices.
                                 if not acc["name"]:
                                     acc["name"] = tc.function.name
                             if tc.function.arguments:
@@ -284,7 +315,7 @@ class Agent:
                 tool_name = acc["name"]
 
                 try:
-                    arguments = json.loads(acc["arguments"] or "{}")
+                    arguments = self._parse_tool_arguments(acc["arguments"])
                 except json.JSONDecodeError as exc:
                     error_msg = (
                         f"Failed to parse arguments for tool '{tool_name}': {exc}. "

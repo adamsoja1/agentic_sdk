@@ -73,6 +73,7 @@ class Crew:
                     yield event
                 elif isinstance(event, ErrorEvent):
                     yield event
+                    return
                 elif isinstance(event, FinalAnswerEvent):
                     yield event
                     return
