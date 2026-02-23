@@ -277,7 +277,7 @@ class Agent:
             }
             self.conversation.messages.append(assistant_msg)
 
-            for acc in tool_calls_acc.values():
+            for i, acc in enumerate(tool_calls_acc.values()):
                 call_id = acc["id"]
                 tool_name = acc["name"]
 
@@ -291,11 +291,19 @@ class Agent:
                     logger.warning(
                         "Agent '%s' bad tool arguments for '%s': %s", self.name, tool_name, exc
                     )
-                    # FIX: must append a tool result for every tool_call_id in the assistant
-                    # message above, otherwise the API returns 400 on the next request
+                    # Append error for this tool call
                     self.conversation.messages.append(
                         {"role": "tool", "tool_call_id": call_id, "content": f"Error: {error_msg}"}
                     )
+                    # Append placeholder results for all remaining tool calls so the API
+                    # sees a complete set of tool results and doesn't return 400
+                    remaining = list(tool_calls_acc.values())[i + 1:]
+                    for remaining_acc in remaining:
+                        self.conversation.messages.append({
+                            "role": "tool",
+                            "tool_call_id": remaining_acc["id"],
+                            "content": "Skipped due to earlier parse error in this batch."
+                        })
                     break
 
                 yield ToolCallStartEvent(
