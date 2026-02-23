@@ -8,6 +8,10 @@ __version__ = "0.1.0"
 __author__ = "Adam Soja"
 __email__ = "your@email.com"
 
+# Set up logging configuration when the package is imported
+from agentic_framework.logging_config import setup_logging
+setup_logging()
+
 from agentic_framework.core.agent import Agent
 from agentic_framework.core.conversation import Conversation
 from agentic_framework.core.crew import Crew
@@ -23,6 +27,7 @@ from agentic_framework.core.stream_events import (
 )
 from agentic_framework.tools.base import BaseTool
 from agentic_framework.tools.base import tool
+from agentic_framework.logging_config import setup_logging, get_logger
 
 __all__ = [
     "Agent",
@@ -39,5 +44,7 @@ __all__ = [
     "TextDeltaEvent",
     "ToolCallStartEvent",
     "ToolResultEvent",
+    "setup_logging",
+    "get_logger",
 ]
 

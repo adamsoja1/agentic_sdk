@@ -93,6 +93,7 @@ class Agent:
 
     def _build_openai_tools(self) -> list[dict[str, Any]]:
         schemas = [t.to_openai_schema() for t in self.tools.values()]
+        logger.warning("Agent '%s' tool keys: %s", self.name, list(self.tools.keys()))
         return schemas
 
     def _system_messages(self) -> list[dict[str, Any]]:
