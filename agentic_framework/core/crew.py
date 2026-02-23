@@ -23,17 +23,20 @@ class Crew:
     system_prompt: str = "You are part of a team of agents working together to solve problems. Collaborate effectively and share information to achieve your goals."
     transfer_limit: int = 5
 
-
     def __post_init__(self):
         if self.entrypoint_agent not in self.agents:
             raise ValueError("Entrypoint agent must be part of the agents list.")
-        # Don't blindly share the same Conversation object when delegating
-        # as pending tool calls will bleed into the delegate agent's context
+
         if self.shared_knowledge and self.only_ask_for_info:
             for agent in self.agents:
                 agent.conversation = self.conversation
+
         for agent in self.agents:
             agent.crew = self
+
+        # FIX: register tools once here instead of on every invoke() loop iteration,
+        # which was causing tool names to be duplicated (e.g. search_scraped_websitesearch_scraped_website)
+        self._register_agents_as_tools()
 
     def get_agent_by_name(self, name: str) -> Agent | None:
         for agent in self.agents:
@@ -52,7 +55,7 @@ class Crew:
         transfer_count = 0
 
         while True:
-            self._register_agents_as_tools()
+            # FIX: removed _register_agents_as_tools() call from here
 
             async for event in current_agent.stream(input_message):
                 if isinstance(event, TextDeltaEvent):
@@ -71,14 +74,21 @@ class Crew:
                     if transfer_count > self.transfer_limit:
                         yield ErrorEvent(
                             agent_name=current_agent.name,
-                            error="Transfer limit exceeded. Ending delegation."
+                            error="Transfer limit exceeded. Ending delegation.",
                         )
+                        return
                     current_agent = self.get_agent_by_name(event.target_agent)
+                    if current_agent is None:
+                        yield ErrorEvent(
+                            agent_name=event.agent_name,
+                            error=f"Delegation target '{event.target_agent}' not found in crew.",
+                        )
+                        return
                     break
-                
+
             if not self.delegate_to_agent:
                 break
-    
+
     async def get_response(self, input_message: str) -> str:
         final_answer = ""
         async for event in self.invoke(input_message):

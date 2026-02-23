@@ -46,8 +46,7 @@ class Agent:
     client: Any = field(default_factory=lambda: _default_client)
     tool_auto_choice: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
-    output_format: Any = None  
-
+    output_format: Any = None
 
     def __post_init__(self):
         if isinstance(self.tools, list):
@@ -56,7 +55,7 @@ class Agent:
     def __prepare_system_prompt(self):
         self.conversation.system_prompt = self.system_prompt
 
-    def add_tool(self, tool: BaseTool|Agent):
+    def add_tool(self, tool: BaseTool | Agent):
         if isinstance(tool, Agent):
             if self.crew.only_ask_for_info or not self.can_delegate:
                 tool = BaseTool(
@@ -70,7 +69,7 @@ class Agent:
                     description=tool.description,
                     func=lambda task, target_agent=tool.name: self._delegate(target_agent, task),
                 )
-            
+
         self.tools[tool.name] = tool
 
     def remove_tool(self, name: str) -> bool:
@@ -91,7 +90,6 @@ class Agent:
             "max_iterations": self.max_iterations,
             "tool_auto_choice": self.tool_auto_choice,
         }
-
 
     def _build_openai_tools(self) -> list[dict[str, Any]]:
         schemas = [t.to_openai_schema() for t in self.tools.values()]
@@ -114,6 +112,7 @@ class Agent:
                 msgs[0]["content"] += crew_hint
             else:
                 msgs.append({"role": "system", "content": crew_hint.strip()})
+
         if self.crew and self.crew.only_ask_for_info:
             agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
             info_hint = (
@@ -121,11 +120,11 @@ class Agent:
                 f"Other available agents: [{agent_list}]. "
                 "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
             )
-            
             if msgs:
                 msgs[0]["content"] += info_hint
             else:
                 msgs.append({"role": "system", "content": info_hint.strip()})
+
         return msgs
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -160,7 +159,7 @@ class Agent:
             return
 
         original_conversation = target.conversation
-        target.conversation = Conversation(id='temp_for_ask_agent')
+        target.conversation = Conversation(id="temp_for_ask_agent")
         target.conversation.system_prompt = original_conversation.system_prompt
 
         try:
@@ -177,7 +176,7 @@ class Agent:
 
     def max_iterations_reached(self, iteration_count: int) -> bool:
         return iteration_count >= self.max_iterations
-    
+
     def modify_prompt_on_max_iterations(self):
         limit_warning = """
         You have reached the maximum number of iterations allowed for this task.
@@ -186,18 +185,19 @@ class Agent:
         if self.system_prompt:
             self.system_prompt += "\n" + limit_warning
 
-
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
             yield ErrorEvent(agent_name=self.name, error="No OpenAI client configured.")
             return
-        
+
         self.conversation.add_message("user", user_message)
 
         openai_tools = self._build_openai_tools()
         tool_choice: Any = "auto" if openai_tools else "none"
 
         final_answer = ""
+        found_answer = False
+        assistant_text = ""
 
         for iteration in range(self.max_iterations):
             if self.max_iterations_reached(iteration):
@@ -241,7 +241,9 @@ class Agent:
                             tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
                         acc = tool_calls_acc[idx]
                         if tc.id:
-                            acc["id"] += tc.id
+                            # FIX: use assignment not += ; tool call IDs arrive whole,
+                            # concatenating produces a corrupted ID that causes 400s
+                            acc["id"] = tc.id
                         if tc.function:
                             if tc.function.name:
                                 acc["name"] += tc.function.name
@@ -251,14 +253,17 @@ class Agent:
                 if choice.finish_reason == "stop":
                     break
 
+            # No tool calls — the LLM gave a final text answer
             if not tool_calls_acc:
                 self.conversation.add_message("assistant", assistant_text)
                 final_answer = assistant_text
+                found_answer = True
                 break
 
+            # Build the assistant message with tool_calls so conversation history is valid
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": assistant_text or '',
+                "content": assistant_text or "",
                 "tool_calls": [
                     {
                         "id": acc["id"],
@@ -273,18 +278,24 @@ class Agent:
             for acc in tool_calls_acc.values():
                 call_id = acc["id"]
                 tool_name = acc["name"]
+
                 try:
                     arguments = json.loads(acc["arguments"] or "{}")
-                except Exception as exc:
+                except json.JSONDecodeError as exc:
                     error_msg = (
                         f"Failed to parse arguments for tool '{tool_name}': {exc}. "
                         "Please retry the call with valid JSON arguments."
                     )
-                    logger.warning("Agent '%s' bad tool arguments for '%s': %s", self.name, tool_name, exc)
+                    logger.warning(
+                        "Agent '%s' bad tool arguments for '%s': %s", self.name, tool_name, exc
+                    )
+                    # FIX: must append a tool result for every tool_call_id in the assistant
+                    # message above, otherwise the API returns 400 on the next request
                     self.conversation.messages.append(
                         {"role": "tool", "tool_call_id": call_id, "content": f"Error: {error_msg}"}
                     )
-                    continue  
+                    continue
+
                 yield ToolCallStartEvent(
                     agent_name=self.name,
                     call_id=call_id,
@@ -311,6 +322,7 @@ class Agent:
                         yield event
                     tool_result = ask_result or f"Asked {target_name} for information."
                     is_error = False
+
                 else:
                     try:
                         tool_result = await self._execute_tool(tool_name, arguments)
@@ -331,11 +343,16 @@ class Agent:
                     {"role": "tool", "tool_call_id": call_id, "content": str(tool_result)}
                 )
 
-        else:
-            logger.warning("Agent '%s' reached max_iterations=%d", self.name, self.max_iterations)
+        if not found_answer:
+            logger.warning(
+                "Agent '%s' never produced a clean final answer after %d iterations",
+                self.name,
+                self.max_iterations,
+            )
+            # Surface last assistant text rather than returning empty string
+            final_answer = assistant_text if assistant_text else "I was unable to complete this task."
 
         yield FinalAnswerEvent(agent_name=self.name, answer=final_answer)
-
 
     async def invoke(self, user_message: str) -> str:
         answer = ""
