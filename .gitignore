@@ -11,3 +11,4 @@ __pycache__/
 *.ipynb
 __pycache__/
 *.pyc
+myenv/
