@@ -246,8 +246,7 @@ class Agent:
                             acc["id"] = tc.id
                         if tc.function:
                             if tc.function.name:
-                                # names can stream in chunks BUT some models repeat the full name
-                                # so only append if it's not already ending with this chunk
+                                logger.warning("CHUNK name='%s' current_acc='%s'", tc.function.name, acc["name"])
                                 if not acc["name"].endswith(tc.function.name):
                                     acc["name"] += tc.function.name
                             if tc.function.arguments:
