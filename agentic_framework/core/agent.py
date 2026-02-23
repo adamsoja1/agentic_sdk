@@ -52,6 +52,8 @@ class Agent:
     def __post_init__(self):
         if isinstance(self.tools, list):
             self.tools = {tool.name: tool for tool in self.tools}
+
+    def __prepare_system_prompt(self):
         self.conversation.system_prompt = self.system_prompt
 
     def add_tool(self, tool: BaseTool|Agent):
@@ -96,6 +98,7 @@ class Agent:
         return schemas
 
     def _system_messages(self) -> list[dict[str, Any]]:
+        self.__prepare_system_prompt()
         msgs: list[dict[str, Any]] = []
         if self.conversation.system_prompt:
             msgs.append({"role": "system", "content": self.conversation.system_prompt})
@@ -172,6 +175,18 @@ class Agent:
             result=result,
         )
 
+    def max_iterations_reached(self, iteration_count: int) -> bool:
+        return iteration_count >= self.max_iterations
+    
+    def modify_prompt_on_max_iterations(self):
+        limit_warning = """
+        You have reached the maximum number of iterations allowed for this task.
+        If you are unable to solve the problem within this limit, provide the best possible answer based on the information you have and explain that you have reached the iteration limit.
+        """
+        if self.system_prompt:
+            self.system_prompt += "\n" + limit_warning
+
+
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
             yield ErrorEvent(agent_name=self.name, error="No OpenAI client configured.")
@@ -184,7 +199,10 @@ class Agent:
 
         final_answer = ""
 
-        for _ in range(self.max_iterations):
+        for iteration in range(self.max_iterations):
+            if self.max_iterations_reached(iteration):
+                self.modify_prompt_on_max_iterations()
+
             messages = self._system_messages() + self.conversation.get_messages()
 
             stream_kwargs: dict[str, Any] = dict(
