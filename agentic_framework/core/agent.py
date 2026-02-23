@@ -242,14 +242,13 @@ class Agent:
                             tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
                         acc = tool_calls_acc[idx]
                         if tc.id:
-                            # FIX: use assignment not += ; tool call IDs arrive whole,
-                            # concatenating produces a corrupted ID that causes 400s
                             acc["id"] = tc.id
                         if tc.function:
                             if tc.function.name:
-                                logger.warning("CHUNK name='%s' current_acc='%s'", tc.function.name, acc["name"])
-                                if not acc["name"].endswith(tc.function.name):
-                                    acc["name"] += tc.function.name
+                                # FIX: only set name if not yet set — name arrives once per tool call index
+                                # never append; two tools called in parallel have different indices
+                                if not acc["name"]:
+                                    acc["name"] = tc.function.name
                             if tc.function.arguments:
                                 acc["arguments"] += tc.function.arguments
 
