@@ -318,4 +318,5 @@ class Agent:
         async for event in self.stream(user_message):
             if isinstance(event, FinalAnswerEvent):
                 answer = event.answer
+                logger.info("Agent '%s' produced final answer: %s", self.name, answer)
         return answer
