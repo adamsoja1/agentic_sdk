@@ -22,7 +22,7 @@ from agentic_framework.core.stream_events import (
     ToolResultEvent,
 )
 from agentic_framework.tools.base import BaseTool
-from agentic_framework.tools.tool import tool
+from agentic_framework.tools.base import tool
 
 __all__ = [
     "Agent",
