@@ -203,6 +203,8 @@ class Agent:
         for iteration in range(self.max_iterations):
             if self.max_iterations_reached(iteration):
                 self.modify_prompt_on_max_iterations()
+                openai_tools = []  # Disable tools after reaching iteration limit
+                tool_choice = "none"
 
             messages = self._system_messages() + self.conversation.get_messages()
 
