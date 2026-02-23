@@ -48,7 +48,14 @@ class Crew:
         for agent in self.agents:
             for other_agent in self.agents:
                 if agent != other_agent and agent.can_delegate:
-                    agent.add_tool(other_agent)
+                    # FIX: skip if already registered
+                    tool_name = (
+                        f"ask_agent_{other_agent.name}"
+                        if self.only_ask_for_info or not agent.can_delegate
+                        else f"delegate_to_agent_{other_agent.name}"
+                    )
+                    if tool_name not in agent.tools:
+                        agent.add_tool(other_agent)
 
     async def invoke(self, input_message: str):
         current_agent = self.entrypoint_agent
