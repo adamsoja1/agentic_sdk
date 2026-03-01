@@ -78,17 +78,16 @@ class Agent:
         # Snapshot of the base toolset — used to restore after skill deactivation
         self._base_tools: dict[str, BaseTool] = dict(self.tools)
         self._active_skill: Skill | None = None
-
+        self._active_skill_prompt: str = ""
 
     def _activate_skill(self, skill: Skill) -> str:
-        self.tools = dict(self._base_tools)
         self.tools = {}
         self.tools.update({t.name: t for t in skill.tools})
         self.tools[_DEACTIVATE_TOOL.name] = _DEACTIVATE_TOOL
         self._active_skill = skill
 
         self._active_skill_prompt = (
-            f"\n\n[Curerntly Active skill: {skill.name}]\n"
+            f"\n\n[Currently Active Skill: {skill.name}]\n"
             f"Call `deactivate_skill` when you are done."
         )
 
@@ -102,7 +101,6 @@ class Agent:
         self._active_skill = None
         self._active_skill_prompt = ""
         return f"Skill '{skill_name}' deactivated."
-
 
     def add_tool(self, tool: BaseTool | Agent):
         if isinstance(tool, Agent):
@@ -157,7 +155,6 @@ class Agent:
         if self._active_skill:
             parts.append(self._active_skill_prompt)
 
-
         if self.crew:
             agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
             if self.can_delegate and not self.crew.only_ask_for_info:
@@ -177,7 +174,6 @@ class Agent:
         self.conversation.system_prompt = system_prompt
 
         return [{"role": "system", "content": system_prompt}] if system_prompt else []
-
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         tool = self.tools.get(tool_name)
@@ -222,7 +218,6 @@ class Agent:
             result=result,
         )
 
-
     def max_iterations_reached(self, iteration_count: int) -> bool:
         return iteration_count >= self.max_iterations - 1
 
@@ -252,6 +247,19 @@ class Agent:
                 return parsed, clean
             raise
 
+    @staticmethod
+    def _extract_text_from_delta(delta: Any) -> str:
+        """Extract only the final answer text from a delta, ignoring reasoning_content.
+
+        Reasoning models (deepseek-r1, qwq, etc.) stream thinking tokens via
+        ``delta.reasoning_content``.  We deliberately skip that field so that
+        ``assistant_text`` — and ultimately the conversation history — contains
+        only the actual response, not the internal chain-of-thought.
+        """
+        content = delta.content
+        if not content:
+            return ""
+        return content
 
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
@@ -274,7 +282,6 @@ class Agent:
                 tool_choice = "none"
 
             messages = self._system_messages() + self.conversation.get_messages()
-            
 
             stream_kwargs: dict[str, Any] = dict(model=self.model, messages=messages, stream=True)
             if openai_tools:
@@ -289,7 +296,9 @@ class Agent:
                 break
 
             assistant_text = ""
+            reasoning_text = ""
             tool_calls_acc: dict[int, dict[str, Any]] = {}
+            finish_reason: str | None = None
 
             async for chunk in response_stream:
                 choice = chunk.choices[0] if chunk.choices else None
@@ -298,10 +307,25 @@ class Agent:
 
                 delta = choice.delta
 
-                if delta.content:
-                    assistant_text += delta.content
-                    yield TextDeltaEvent(agent_name=self.name, delta=delta.content)
+                # ── Reasoning content (thinking tokens) ──────────────────────
+                # Present on deepseek-r1, qwq and similar models.
+                # We accumulate it separately so it never leaks into
+                # assistant_text or the conversation history.
+                raw_reasoning = getattr(delta, "reasoning_content", None)
+                if raw_reasoning:
+                    reasoning_text += raw_reasoning
+                    logger.debug(
+                        "Agent '%s' reasoning token (iteration %d): %r",
+                        self.name, iteration, raw_reasoning,
+                    )
 
+                # ── Visible assistant content ─────────────────────────────────
+                text_chunk = self._extract_text_from_delta(delta)
+                if text_chunk:
+                    assistant_text += text_chunk
+                    yield TextDeltaEvent(agent_name=self.name, delta=text_chunk)
+
+                # ── Tool call fragments ───────────────────────────────────────
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -316,16 +340,43 @@ class Agent:
                             if tc.function.arguments:
                                 acc["arguments"] += tc.function.arguments
 
-                if choice.finish_reason in ("stop", "tool_calls"):
-                    break
+                if choice.finish_reason is not None:
+                    finish_reason = choice.finish_reason
+                    # Do NOT break here — let the async-for exhaust the stream
+                    # naturally.  Some reasoning models send content *after* the
+                    # chunk that carries finish_reason, and breaking early would
+                    # drop those tokens.
 
+            logger.debug(
+                "Agent '%s' iteration %d finished. finish_reason=%r tool_calls=%d "
+                "assistant_text_len=%d reasoning_text_len=%d",
+                self.name, iteration, finish_reason,
+                len(tool_calls_acc), len(assistant_text), len(reasoning_text),
+            )
+
+            # ── No tool calls → model produced its final answer ───────────────
             if not tool_calls_acc:
+                if not assistant_text.strip():
+                    # Model returned nothing visible (only reasoning, or truly
+                    # empty).  Log and retry rather than yielding a blank answer.
+                    logger.warning(
+                        "Agent '%s' returned empty assistant_text on iteration %d "
+                        "(finish_reason=%r, reasoning_len=%d). Retrying.",
+                        self.name, iteration, finish_reason, len(reasoning_text),
+                    )
+                    # Feed a gentle nudge so the model actually answers.
+                    self.conversation.add_message(
+                        "user",
+                        "Please provide your answer based on your reasoning above.",
+                    )
+                    continue
+
                 self.conversation.add_message("assistant", assistant_text)
                 final_answer = assistant_text
                 found_answer = True
                 break
 
-            # Parse arguments
+            # ── Parse tool-call arguments ─────────────────────────────────────
             parsed_tool_calls: list[tuple[dict[str, Any], str, str, str]] = []
             parse_error: str | None = None
             parse_error_index: int = 0
@@ -339,7 +390,10 @@ class Agent:
                         f"Failed to parse arguments for tool '{acc['name']}': {exc}. "
                         "Please retry the call with valid JSON arguments."
                     )
-                    logger.warning("Agent '%s' bad tool arguments for '%s': %s", self.name, acc["name"], exc)
+                    logger.warning(
+                        "Agent '%s' bad tool arguments for '%s': %s",
+                        self.name, acc["name"], exc,
+                    )
                     parse_error_index = i
                     for remaining_acc in list(tool_calls_acc.values())[i:]:
                         parsed_tool_calls.append(({}, "{}", remaining_acc["id"], remaining_acc["name"]))
@@ -372,8 +426,8 @@ class Agent:
                     })
                 continue
 
-            # Rebuild openai_tools after each iteration — toolset may have changed
-            # due to skill activation/deactivation.
+            # Rebuild openai_tools after each iteration — toolset may have
+            # changed due to skill activation/deactivation.
             openai_tools = self._build_openai_tools()
 
             for arguments, clean_args, call_id, tool_name in parsed_tool_calls:
