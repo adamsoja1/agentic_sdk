@@ -146,7 +146,8 @@ class Agent:
         logger.warning("Agent '%s' tool keys: %s", self.name, list(self.tools.keys()))
         return schemas
 
-    def _system_messages(self) -> list[dict[str, Any]]:
+    def _rebuild_system_prompt(self) -> None:
+        """Rebuild and store the system prompt on the conversation object."""
         parts = [self.system_prompt]
 
         if self.skills:
@@ -170,10 +171,7 @@ class Agent:
                     "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
                 )
 
-        system_prompt = "".join(parts)
-        self.conversation.system_prompt = system_prompt
-
-        return [{"role": "system", "content": system_prompt}] if system_prompt else []
+        self.conversation.system_prompt = "".join(parts)
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         tool = self.tools.get(tool_name)
@@ -204,7 +202,7 @@ class Agent:
             return
 
         original_conversation = target.conversation
-        target.conversation = Conversation(id="temp_for_ask_agent")
+        target.conversation = Conversation()
         target.conversation.system_prompt = original_conversation.system_prompt
         try:
             result = await target.invoke(question)
@@ -281,7 +279,10 @@ class Agent:
                 openai_tools = []
                 tool_choice = "none"
 
-            messages = self._system_messages() + self.conversation.get_messages()
+            # Rebuild system prompt each iteration (skill state may have changed)
+            # and retrieve the full message history including the system prompt.
+            self._rebuild_system_prompt()
+            messages = self.conversation.get_messages()
 
             stream_kwargs: dict[str, Any] = dict(model=self.model, messages=messages, stream=True)
             if openai_tools:
@@ -399,10 +400,10 @@ class Agent:
                         parsed_tool_calls.append(({}, "{}", remaining_acc["id"], remaining_acc["name"]))
                     break
 
-            assistant_msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": assistant_text or "",
-                "tool_calls": [
+            # Store the assistant turn (with tool call requests) in conversation.
+            self.conversation.add_assistant_with_tool_calls(
+                content=assistant_text or "",
+                tool_calls=[
                     {
                         "id": call_id,
                         "type": "function",
@@ -410,20 +411,19 @@ class Agent:
                     }
                     for _, clean_args, call_id, tool_name in parsed_tool_calls
                 ],
-            }
-            self.conversation.messages.append(assistant_msg)
+            )
 
             if parse_error is not None:
                 failed_call_id = parsed_tool_calls[parse_error_index][2]
-                self.conversation.messages.append(
-                    {"role": "tool", "tool_call_id": failed_call_id, "content": f"Error: {parse_error}"}
+                self.conversation.add_tool_result(
+                    tool_call_id=failed_call_id,
+                    content=f"Error: {parse_error}",
                 )
                 for _, _, remaining_call_id, _ in parsed_tool_calls[parse_error_index + 1:]:
-                    self.conversation.messages.append({
-                        "role": "tool",
-                        "tool_call_id": remaining_call_id,
-                        "content": "Skipped due to earlier parse error in this batch.",
-                    })
+                    self.conversation.add_tool_result(
+                        tool_call_id=remaining_call_id,
+                        content="Skipped due to earlier parse error in this batch.",
+                    )
                 continue
 
             # Rebuild openai_tools after each iteration — toolset may have
@@ -484,8 +484,10 @@ class Agent:
                     is_error=is_error,
                 )
 
-                self.conversation.messages.append(
-                    {"role": "tool", "tool_call_id": call_id, "content": str(tool_result)}
+                # Store the tool result in the conversation so it's part of history.
+                self.conversation.add_tool_result(
+                    tool_call_id=call_id,
+                    content=str(tool_result),
                 )
 
         if not found_answer:
