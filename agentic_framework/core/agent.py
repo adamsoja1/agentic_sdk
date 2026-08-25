@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, TYPE_CHECKING
 from openai import AsyncOpenAI
 
 from agentic_framework.core.conversation import Conversation
+from agentic_framework.core.prompting import AgentPrompt, PromptContent, PromptTemplate
 from agentic_framework.tools.base import BaseTool, Skill
 from agentic_framework.core.stream_events import (
     AskAgentEventResult,
@@ -39,38 +40,37 @@ class Agent:
     model: str
     description: str = ""
     system_prompt: str = ""
+    prompt: AgentPrompt | None = None
     can_delegate: bool = True
     tools: list[BaseTool] = field(default_factory=list)
     skills: list[Skill] = field(default_factory=list)
     conversation: Conversation = field(default_factory=Conversation)
+    prompt_template: PromptTemplate | None = None
     max_iterations: int = 7
     client: Any = field(default_factory=lambda: _default_client)
     tool_auto_choice: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
     output_format: Any = None
     reasoning_effort: str = "medium"  # "low", "medium", "high"
+    max_iteration_warning_prompt: str = (
+        "You have reached the maximum number of iterations allowed for this task. "
+        "Provide the best possible answer based on the information you have and explain "
+        "that you have reached the iteration limit."
+    )
 
     def __post_init__(self):
         if isinstance(self.tools, list):
             self.tools = {tool.name: tool for tool in self.tools}
 
         if self.skills:
-            skills_list = "\n".join(f"- {skill.name}: {skill.description}" for skill in self.skills)
-            self._skill_prompt = (
-                f"\n\nYou have the following skills available. "
-                f"Activate a skill when the task matches its domain — this will unlock its specific tools. "
-                f"Call skill_<skill_name> to activate a skill, then use its tools as needed. "
-                f"Switching to another skill automatically deactivates the current one.\n\n"
-                f"Available skills:\n{skills_list}"
-                f"You can activate only one skill at a time."
-            )
             for skill in self.skills:
                 self.tools[skill.name] = skill
 
         # Snapshot of the base toolset — used to restore after skill deactivation
         self._base_tools: dict[str, BaseTool] = dict(self.tools)
         self._active_skill: Skill | None = None
-        self._active_skill_prompt: str = ""
+        self._max_iterations_warning_enabled = False
+        self.prompt_template = self._initialize_prompt_template()
 
     def _activate_skill(self, skill: Skill) -> str:
         prev_skill_name = self._active_skill.name if self._active_skill else None
@@ -80,11 +80,6 @@ class Agent:
         # Overlay the new skill's tools
         self.tools.update({t.name: t for t in skill.tools})
         self._active_skill = skill
-
-        self._active_skill_prompt = (
-            f"\n\n[Currently Active Skill: {skill.name}]\n"
-            f"Activate a different skill at any time to switch — the previous one deactivates automatically."
-        )
 
         msg = f"Skill '{skill.name}' activated."
         if prev_skill_name:
@@ -97,7 +92,6 @@ class Agent:
         skill_name = self._active_skill.name
         self.tools = dict(self._base_tools)
         self._active_skill = None
-        self._active_skill_prompt = ""
         return f"Skill '{skill_name}' deactivated."
 
     def add_tool(self, tool: BaseTool | Agent):
@@ -144,32 +138,145 @@ class Agent:
         logger.warning("Agent '%s' tool keys: %s", self.name, list(self.tools.keys()))
         return schemas
 
+    def _initialize_prompt_template(self) -> PromptTemplate:
+        template = self.prompt_template.clone() if self.prompt_template is not None else PromptTemplate()
+
+        self._prepend_prompt_section(template, "system_prompt", self._render_system_prompt_section)
+        self._prepend_prompt_section(template, "prompt", self._render_agent_prompt)
+
+        if template.get_section("skills") is None:
+            template.set_section("skills", self._render_skills_prompt)
+
+        if template.get_section("active_skill") is None:
+            template.set_section("active_skill", self._render_active_skill_prompt)
+
+        if template.get_section("crew") is None:
+            template.set_section("crew", self._render_crew_prompt)
+
+        if template.get_section("iteration_limit") is None:
+            template.set_section("iteration_limit", self._render_iteration_limit_prompt)
+
+        return template
+
+    @staticmethod
+    def _prepend_prompt_section(
+        template: PromptTemplate,
+        name: str,
+        content: PromptContent,
+    ) -> None:
+        if template.get_section(name) is not None:
+            return
+        if template.sections:
+            template.set_section(name, content, before=template.sections[0].name)
+            return
+        template.set_section(name, content)
+
+    def _render_agent_prompt(self, _: Agent | None = None) -> str:
+        if self.prompt is not None:
+            return self.prompt.render().strip()
+        return ""
+
+    def _render_system_prompt_section(self, _: Agent | None = None) -> str:
+        return self.system_prompt.strip()
+
+    @staticmethod
+    def _format_skill_tool_list(skill: Skill) -> str:
+        return ", ".join(tool.name for tool in skill.tools)
+
+    def _render_skills_prompt(self, _: Agent | None = None) -> str:
+        if not self.skills:
+            return ""
+
+        lines = [
+            "Skills are available for domain-specific work.",
+            "How to use skills:",
+            "- Call the matching `skill_<name>` tool before using the tools it unlocks.",
+            "- Activating a new skill unlocks that skill's tools and automatically deactivates the previously active skill.",
+            "- After activation, use the unlocked tools for the current task until you switch skills again.",
+            "Available skills:",
+        ]
+
+        for skill in self.skills:
+            tool_list = self._format_skill_tool_list(skill) or "No unlocked tools."
+            description = skill.description or "No description provided."
+            lines.append(f"- {skill.name}: {description} Activate this skill to unlock: {tool_list}.")
+
+        return "\n".join(lines)
+
+    def _render_active_skill_prompt(self, _: Agent | None = None) -> str:
+        if self._active_skill is None:
+            return ""
+
+        tool_list = self._format_skill_tool_list(self._active_skill) or "No unlocked tools."
+        description = self._active_skill.description or "No description provided."
+        return "\n".join(
+            [
+                f"Active skill: {self._active_skill.name}",
+                f"Current skill focus: {description}",
+                f"Unlocked tools from this skill: {tool_list}",
+                "The previously active skill, if any, has been deactivated. Activate another skill at any time to switch context.",
+            ]
+        )
+
+    def _render_crew_prompt(self, _: Agent | None = None) -> str:
+        if self.crew is None:
+            return ""
+
+        agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
+        if not agent_list:
+            return ""
+
+        if self.can_delegate and not self.crew.only_ask_for_info:
+            return (
+                "You are part of a crew.\n"
+                f"Other available agents: [{agent_list}].\n"
+                "Use `delegate_to_agent_<agent_name>` when a task falls outside your expertise."
+            )
+
+        if self.crew.only_ask_for_info:
+            return (
+                "You can ask other specialists for help.\n"
+                f"Other available agents: [{agent_list}].\n"
+                "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
+            )
+
+        return ""
+
+    def _render_iteration_limit_prompt(self, _: Agent | None = None) -> str:
+        if not self._max_iterations_warning_enabled:
+            return ""
+        return self.max_iteration_warning_prompt
+
+    def render_system_prompt(self) -> str:
+        return self.prompt_template.render(self)
+
+    def set_prompt_section(
+        self,
+        name: str,
+        content: PromptContent,
+        *,
+        enabled: bool = True,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> None:
+        self.prompt_template.set_section(
+            name=name,
+            content=content,
+            enabled=enabled,
+            before=before,
+            after=after,
+        )
+        self._rebuild_system_prompt()
+
+    def remove_prompt_section(self, name: str) -> bool:
+        removed = self.prompt_template.remove_section(name)
+        if removed:
+            self._rebuild_system_prompt()
+        return removed
+
     def _rebuild_system_prompt(self) -> None:
         """Rebuild and store the system prompt on the conversation object."""
-        parts = [self.system_prompt]
-
-        if self.skills:
-            parts.append(self._skill_prompt)
-
-        if self._active_skill:
-            parts.append(self._active_skill_prompt)
-
-        if self.crew:
-            agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
-            if self.can_delegate and not self.crew.only_ask_for_info:
-                parts.append(
-                    f"\nYou are part of a crew. "
-                    f"Other available agents: [{agent_list}]. "
-                    "Use `delegate_to_agent_<agent_name>` when a task falls outside your expertise."
-                )
-            elif self.crew.only_ask_for_info:
-                parts.append(
-                    f"\nYou can ask other specialists for help. "
-                    f"Other available agents: [{agent_list}]. "
-                    "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
-                )
-
-        self.conversation.system_prompt = "".join(parts)
+        self.conversation.system_prompt = self.render_system_prompt()
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         tool = self.tools.get(tool_name)
@@ -218,12 +325,7 @@ class Agent:
         return iteration_count >= self.max_iterations - 1
 
     def modify_prompt_on_max_iterations(self):
-        limit_warning = (
-            "\nYou have reached the maximum number of iterations allowed for this task. "
-            "Provide the best possible answer based on the information you have and explain "
-            "that you have reached the iteration limit."
-        )
-        self.system_prompt += limit_warning
+        self._max_iterations_warning_enabled = True
 
     @staticmethod
     def _parse_tool_arguments(raw: str) -> tuple[dict[str, Any], str]:

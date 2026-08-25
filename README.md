@@ -62,7 +62,7 @@ If you do not pass `client=...`, the framework creates a default `AsyncOpenAI` c
 
 ```python
 import asyncio
-from agentic_framework import Agent
+from agentic_framework import Agent, AgentPrompt
 from agentic_framework.core.stream_events import TextDeltaEvent, FinalAnswerEvent
 from agentic_framework.tools.base import tool
 
@@ -76,7 +76,16 @@ def get_weather(city: str) -> str:
 agent = Agent(
     name="assistant",
     model="gpt-4o-mini",
-    system_prompt="You are a concise assistant.",
+    prompt=AgentPrompt(
+        role="You are a concise assistant.",
+        objectives=[
+            "Answer the user's question accurately.",
+            "Keep the answer short and helpful.",
+        ],
+        output_requirements=[
+            "Use short paragraphs.",
+        ],
+    ),
     tools=[get_weather],
 )
 
@@ -97,6 +106,55 @@ For a non-streaming convenience wrapper:
 ```python
 answer = await agent.invoke("What is the weather in London?")
 ```
+
+## Structured Agent Prompts
+
+Use `AgentPrompt` when you want the base prompt to stay readable and structured instead of writing one long system string.
+
+```python
+from agentic_framework import Agent, AgentPrompt, PromptBlock
+
+
+support_prompt = AgentPrompt(
+    role="You are a senior product support agent.",
+    objectives=[
+        "Diagnose the user's issue accurately.",
+        "Guide the user toward the most practical next step.",
+    ],
+    context="You help customers with product setup, billing, and troubleshooting.",
+    instructions=[
+        "Use tools when they improve the answer.",
+        "Explain tradeoffs when presenting multiple options.",
+    ],
+    constraints=[
+        "Do not invent account-specific data.",
+        "Be explicit when you are uncertain.",
+    ],
+    style=[
+        "Prefer short sections.",
+        "Use calm, direct language.",
+    ],
+    output_requirements=[
+        "End with a recommendation or next action.",
+    ],
+    additional_sections=[
+        PromptBlock(
+            title="Escalation Rules",
+            items=[
+                "Recommend human support when the issue requires account-only access.",
+            ],
+        )
+    ],
+)
+
+agent = Agent(
+    name="support",
+    model="gpt-4o-mini",
+    prompt=support_prompt,
+)
+```
+
+`system_prompt="..."` still works for backward compatibility, but `prompt=AgentPrompt(...)` is the recommended format for base instructions.
 
 ## Tools
 
@@ -124,7 +182,7 @@ Supported primitive schema mappings are `str`, `int`, `float`, `bool`, `list`, a
 
 ## Skills
 
-Skills group tools behind an activation tool. A skill named `"research"` is exposed as `skill_research`; when activated, its tools are added to the agent's available tools until another skill is activated or the skill is deactivated internally.
+Skills group tools behind an activation tool. A skill named `"research"` is exposed as `skill_research`; when activated, its tools are added to the agent's available tools until another skill is activated or the skill is deactivated internally. The default skill prompt section also explains how to activate skills, what tools they unlock, and that switching skills deactivates the previously active one.
 
 ```python
 from agentic_framework.tools.base import BaseTool, Skill
@@ -148,6 +206,58 @@ agent = Agent(
     skills=[research_skill],
 )
 ```
+
+### Segmented System Prompts
+
+`Agent` can compose its system prompt from named sections so you can swap or extend behavior without rewriting one large string. The default template renders your structured `prompt`, legacy `system_prompt`, skill guidance, active skill reminders, crew coordination, and iteration-limit warning as separate sections. All of those sections are ordinary template sections, so you can replace or remove them when needed.
+
+```python
+from agentic_framework import Agent, PromptSection, PromptTemplate
+from agentic_framework.tools.base import BaseTool, Skill
+
+
+search_tool = BaseTool(
+    name="search_docs",
+    description="Search internal docs.",
+    func=lambda query: f"Results for {query}",
+)
+
+research_skill = Skill(
+    name="research",
+    description="Use when the task needs document research.",
+    tools=[search_tool],
+)
+
+prompt_template = PromptTemplate(
+    sections=[
+        PromptSection("tone", "Be decisive, concise, and cite the tools you use."),
+        PromptSection(
+            "skills",
+            lambda agent: (
+                "Skill routing:\n"
+                "- Prefer `skill_research` for docs or knowledge-base work.\n"
+                "- Activate a skill before calling the tools it unlocks."
+            ) if agent.skills else "",
+        ),
+    ]
+)
+
+agent = Agent(
+    name="assistant",
+    model="gpt-4o-mini",
+    system_prompt="You are a product support agent.",
+    skills=[research_skill],
+    prompt_template=prompt_template,
+)
+
+agent.set_prompt_section(
+    "formatting",
+    "Answer in short sections with a final recommendation.",
+    after="tone",
+)
+```
+
+If you do not provide a custom `skills` section, the framework injects a default one that lists each skill and the tools it unlocks.
 
 ## Conversations
 
@@ -248,10 +358,12 @@ Agent(
     model: str,
     description: str = "",
     system_prompt: str = "",
+    prompt: AgentPrompt | None = None,
     can_delegate: bool = True,
     tools: list[BaseTool] = [],
     skills: list[Skill] = [],
     conversation: Conversation = Conversation(),
+    prompt_template: PromptTemplate | None = None,
     max_iterations: int = 7,
     client: Any = default AsyncOpenAI client,
     tool_auto_choice: bool = False,

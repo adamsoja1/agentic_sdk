@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agentic_framework.core.agent import Agent
+from agentic_framework.core.prompting import AgentPrompt, PromptSection, PromptTemplate
 from agentic_framework.core.stream_events import (
     FinalAnswerEvent,
     TextDeltaEvent,
@@ -242,3 +243,116 @@ def test_agent_skill_activation_switches_tool_overlay_and_can_deactivate():
 
     assert agent._deactivate_skill() == "Skill 'skill_writing' deactivated."
     assert agent.list_tools() == ["base", "skill_research", "skill_writing"]
+
+
+def test_agent_renders_structured_prompt_object():
+    agent = Agent(
+        name="assistant",
+        model="test-model",
+        prompt=AgentPrompt(
+            role="You are a billing support specialist.",
+            objectives=[
+                "Resolve subscription questions accurately.",
+                "Offer the clearest next step.",
+            ],
+            constraints=["Do not guess account-specific details."],
+            output_requirements=["Use short sections."],
+        ),
+    )
+
+    prompt = agent.render_system_prompt()
+
+    assert prompt.startswith("Role:\nYou are a billing support specialist.")
+    assert "Role:\nYou are a billing support specialist." in prompt
+    assert "Objectives:\n- Resolve subscription questions accurately." in prompt
+    assert "Constraints:\n- Do not guess account-specific details." in prompt
+    assert "Output Requirements:\n- Use short sections." in prompt
+
+
+def test_agent_renders_segmented_system_prompt_with_skill_context():
+    research_tool = BaseTool(name="search", description="Search.", func=lambda query: query)
+    research_skill = Skill(
+        name="research",
+        description="Use for document research.",
+        tools=[research_tool],
+    )
+    agent = Agent(
+        name="assistant",
+        model="test-model",
+        system_prompt="You are a concise assistant.",
+        skills=[research_skill],
+    )
+
+    agent._rebuild_system_prompt()
+    prompt = agent.conversation.system_prompt
+
+    assert prompt.startswith("You are a concise assistant.")
+    assert "You are a concise assistant." in prompt
+    assert "Available skills:" in prompt
+    assert "skill_research" in prompt
+    assert "Activate this skill to unlock: search." in prompt
+    assert "Active skill: skill_research" not in prompt
+
+    agent._activate_skill(research_skill)
+    agent._rebuild_system_prompt()
+    prompt = agent.conversation.system_prompt
+
+    assert "Active skill: skill_research" in prompt
+    assert "Current skill focus: Use for document research." in prompt
+    assert "Unlocked tools from this skill: search" in prompt
+
+
+def test_agent_prompt_sections_can_be_replaced_and_inserted():
+    research_tool = BaseTool(name="search", description="Search.", func=lambda query: query)
+    research_skill = Skill(name="research", description="Research.", tools=[research_tool])
+    template = PromptTemplate(
+        sections=[
+            PromptSection("tone", "Stay calm and structured."),
+            PromptSection("skills", "Use the custom skill router when appropriate."),
+        ]
+    )
+    agent = Agent(
+        name="assistant",
+        model="test-model",
+        system_prompt="Base instructions.",
+        skills=[research_skill],
+        prompt_template=template,
+    )
+
+    agent.set_prompt_section("format", "Reply with short paragraphs.", after="tone")
+    agent._rebuild_system_prompt()
+    prompt = agent.conversation.system_prompt
+
+    assert prompt.startswith("Base instructions.")
+    assert "Base instructions." in prompt
+    assert "Stay calm and structured." in prompt
+    assert "Reply with short paragraphs." in prompt
+    assert "Use the custom skill router when appropriate." in prompt
+    assert "Available skills:" not in prompt
+
+
+def test_agent_prompt_sections_can_be_removed():
+    agent = Agent(
+        name="assistant",
+        model="test-model",
+        system_prompt="Base instructions.",
+    )
+
+    assert agent.remove_prompt_section("system_prompt") is True
+    assert agent.render_system_prompt() == ""
+
+
+def test_agent_max_iteration_warning_uses_dedicated_prompt_section():
+    agent = Agent(
+        name="assistant",
+        model="test-model",
+        system_prompt="Base instructions.",
+    )
+
+    assert "maximum number of iterations" not in agent.render_system_prompt()
+
+    agent.modify_prompt_on_max_iterations()
+
+    assert agent.system_prompt == "Base instructions."
+    assert "Base instructions." in agent.render_system_prompt()
+    assert "maximum number of iterations" in agent.render_system_prompt()
