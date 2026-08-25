@@ -156,6 +156,58 @@ agent = Agent(
 
 `system_prompt="..."` still works for backward compatibility, but `prompt=AgentPrompt(...)` is the recommended format for base instructions.
 
+You can also define the exact segments yourself and choose how points render:
+
+```python
+custom_prompt = AgentPrompt(
+    sections=[
+        PromptBlock(title="Persona", content="You are a release manager."),
+        PromptBlock(
+            title="Workflow",
+            items=[
+                "Check the changelog.",
+                "Summarize risk before recommendation.",
+            ],
+            point_prefix="{index}. ",
+        ),
+        PromptBlock(
+            title="Guardrails",
+            items=["Do not invent release dates."],
+            point_prefix="* ",
+        ),
+    ]
+)
+```
+
+For the built-in segments, set `point_prefix="{index}. "` for numbered points, `point_prefix="* "` for star bullets, or `point_prefix=None` for plain lines. `heading_suffix=""` removes the default colon after section titles.
+
+Prompt sections can also live in markdown files:
+
+```markdown
+# Persona
+You are a release manager.
+
+## Workflow
+1. Check the changelog.
+2. Summarize risk before recommendation.
+
+## Guardrails
+- Do not invent release dates.
+- Name uncertainty clearly.
+```
+
+```python
+agent = Agent(
+    name="release_manager",
+    model="gpt-4o-mini",
+    prompt=AgentPrompt.from_markdown("prompts/release_manager.md"),
+)
+
+template = PromptTemplate.from_markdown("prompts/support_sections.md")
+```
+
+Markdown headings become prompt sections. Bullet and numbered lists are loaded as section points, and paragraph text becomes section content.
+
 ## Tools
 
 Decorate a Python function with `@tool` to expose it to an agent. The function name becomes the tool name, the docstring becomes the description, and type hints are used to build a JSON schema.

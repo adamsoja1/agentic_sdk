@@ -50,6 +50,170 @@ def test_agent_prompt_renders_structured_sections():
     assert "Domain Notes:\n- Prefer SDK-native solutions before custom wrappers." in rendered
 
 
+def test_agent_prompt_can_render_custom_sections():
+    prompt = AgentPrompt(
+        sections=[
+            PromptBlock(title="Persona", content="You are a release manager."),
+            PromptBlock(
+                title="Workflow",
+                items=[
+                    "Check the changelog.",
+                    "Summarize risk before recommendation.",
+                ],
+                point_prefix="{index}. ",
+            ),
+            PromptBlock(
+                title="Do Not",
+                items=["Invent release dates."],
+                heading_suffix="",
+                point_prefix="* ",
+            ),
+        ]
+    )
+
+    assert prompt.render() == (
+        "Persona:\n"
+        "You are a release manager.\n\n"
+        "Workflow:\n"
+        "1. Check the changelog.\n"
+        "2. Summarize risk before recommendation.\n\n"
+        "Do Not\n"
+        "* Invent release dates."
+    )
+
+
+def test_agent_prompt_can_customize_default_point_style():
+    prompt = AgentPrompt(
+        objectives=["Triage the request.", "Recommend a next step."],
+        constraints=["Do not invent details."],
+        point_prefix="{index}. ",
+    )
+
+    rendered = prompt.render()
+
+    assert "Objectives:\n1. Triage the request.\n2. Recommend a next step." in rendered
+    assert "Constraints:\n1. Do not invent details." in rendered
+
+
+def test_prompt_block_can_render_plain_points():
+    block = PromptBlock(
+        title="Checklist",
+        items=["Confirm scope.", "Report result."],
+        point_prefix=None,
+    )
+
+    assert block.render() == "Checklist:\nConfirm scope.\nReport result."
+
+
+def test_agent_prompt_can_load_custom_sections_from_markdown_text():
+    prompt = AgentPrompt.from_markdown_text(
+        """
+# Persona
+You are a release manager.
+
+## Workflow
+1. Check the changelog.
+2. Summarize risk before recommendation.
+
+## Guardrails
+* Do not invent release dates.
+* Name uncertainty clearly.
+""".strip()
+    )
+
+    assert prompt.render() == (
+        "Persona:\n"
+        "You are a release manager.\n\n"
+        "Workflow:\n"
+        "1. Check the changelog.\n"
+        "2. Summarize risk before recommendation.\n\n"
+        "Guardrails:\n"
+        "* Do not invent release dates.\n"
+        "* Name uncertainty clearly."
+    )
+
+
+def test_agent_prompt_can_load_custom_sections_from_markdown_file(tmp_path):
+    prompt_file = tmp_path / "support_prompt.md"
+    prompt_file.write_text(
+        """
+# Role
+You are a support engineer.
+
+# Instructions
+- Ask precise follow-up questions.
+- Prefer reproducible steps.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    prompt = AgentPrompt.from_markdown(prompt_file)
+
+    assert prompt.render() == (
+        "Role:\n"
+        "You are a support engineer.\n\n"
+        "Instructions:\n"
+        "- Ask precise follow-up questions.\n"
+        "- Prefer reproducible steps."
+    )
+
+
+def test_agent_prompt_markdown_preserves_paragraph_breaks():
+    prompt = AgentPrompt.from_markdown_text(
+        """
+# Context
+First paragraph.
+
+Second paragraph.
+""".strip()
+    )
+
+    assert prompt.render() == "Context:\nFirst paragraph.\n\nSecond paragraph."
+
+
+def test_agent_prompt_markdown_skips_heading_only_sections():
+    prompt = AgentPrompt.from_markdown_text(
+        """
+# Prompt
+## Role
+You are a support engineer.
+
+## Empty
+### Instructions
+- Ask precise follow-up questions.
+""".strip()
+    )
+
+    assert prompt.render() == (
+        "Role:\n"
+        "You are a support engineer.\n\n"
+        "Instructions:\n"
+        "- Ask precise follow-up questions."
+    )
+
+
+def test_prompt_template_can_load_sections_from_markdown_text():
+    template = PromptTemplate.from_markdown_text(
+        """
+## Tone
+Be concise.
+
+## Output Requirements
+- Include a recommendation.
+- Mention uncertainty.
+""".strip()
+    )
+
+    assert [section.name for section in template.sections] == ["tone", "output_requirements"]
+    assert template.render() == (
+        "Tone:\n"
+        "Be concise.\n\n"
+        "Output Requirements:\n"
+        "- Include a recommendation.\n"
+        "- Mention uncertainty."
+    )
+
+
 def test_prompt_template_renders_sections_and_skips_disabled_ones():
     template = PromptTemplate(
         sections=[
