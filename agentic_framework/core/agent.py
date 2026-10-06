@@ -49,6 +49,7 @@ class Agent:
     max_iterations: int = 7
     client: Any = field(default_factory=lambda: _default_client)
     tool_auto_choice: bool = False
+    web_search: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
     output_format: Any = None
     reasoning_effort: str = "medium"  # "low", "medium", "high"
@@ -131,10 +132,14 @@ class Agent:
             "conversation": self.conversation.get_messages(),
             "max_iterations": self.max_iterations,
             "tool_auto_choice": self.tool_auto_choice,
+            "web_search": self.web_search,
         }
 
     def _build_openai_tools(self) -> list[dict[str, Any]]:
         schemas = [
+            {"type": "web_search"}
+        ] if self.web_search else []
+        schemas.extend([
             {
                 "type": "function",
                 "name": t.name,
@@ -142,7 +147,7 @@ class Agent:
                 "parameters": t._build_parameters(),
             }
             for t in self.tools.values()
-        ]
+        ])
         logger.warning("Agent '%s' tool keys: %s", self.name, list(self.tools.keys()))
         return schemas
 

@@ -419,6 +419,7 @@ Agent(
     max_iterations: int = 7,
     client: Any = default AsyncOpenAI client,
     tool_auto_choice: bool = False,
+    web_search: bool = False,
     crew: Crew | None = None,
     output_format: Any = None,
     reasoning_effort: str = "medium",
@@ -433,6 +434,13 @@ Useful methods:
 - `remove_tool(name: str) -> bool`: removes a tool by name.
 - `list_tools() -> list[str]`: lists available tool names.
 - `as_dict() -> dict`: serializes basic agent state.
+
+Set `web_search=True` to enable the Responses API's built-in web search tool:
+
+```python
+agent = Agent(name="researcher", model="gpt-4.1", web_search=True)
+answer = await agent.invoke("What changed in the latest release?")
+```
 
 ### Crew
 
