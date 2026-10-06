@@ -26,29 +26,25 @@ class FakeStream:
             yield chunk
 
 
-class FakeCompletions:
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.calls = []
-
-    async def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return FakeStream(self._responses.pop(0))
-
-
 class FakeClient:
     def __init__(self, responses):
-        self.chat = SimpleNamespace(completions=FakeCompletions(responses))
+        self._responses = responses
+        self.calls = []
+        async def create(**kwargs):
+            self.calls.append(kwargs)
+            return FakeStream(self._responses.pop(0))
+        self.responses = SimpleNamespace(create=create)
 
 
 def chunk(content="", tool_calls=None, finish_reason=None, reasoning_content=None):
-    delta = SimpleNamespace(
-        content=content,
-        tool_calls=tool_calls or [],
-        reasoning_content=reasoning_content,
-    )
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
+    if tool_calls:
+        tc = tool_calls[0]
+        item = SimpleNamespace(
+            id=f"item_{tc.index}", type="function_call", call_id=tc.id,
+            name=tc.function.name, arguments=tc.function.arguments,
+        )
+        return SimpleNamespace(type="response.output_item.done", item=item)
+    return SimpleNamespace(type="response.output_text.delta", delta=content)
 
 
 def tool_call_delta(index, call_id=None, name=None, arguments=""):
@@ -86,7 +82,7 @@ def test_agent_streams_final_answer_and_records_visible_messages():
         {"role": "assistant", "content": "Hello, world!"},
     ]
 
-    create_call = client.chat.completions.calls[0]
+    create_call = client.calls[0]
     assert create_call["model"] == "test-model"
     assert create_call["stream"] is True
     assert "tools" not in create_call

@@ -39,8 +39,6 @@ class ToolResultEvent(BaseEvent):
     content: str = ""
 
 
-# (opcjonalne – ale polecane)
-
 @dataclass
 class ReasoningEvent(BaseEvent):
     content: str = ""  # NIE trafia do LLM
@@ -178,6 +176,31 @@ class Conversation:
                 continue
 
         return messages
+
+    def get_response_input(self) -> list[dict[str, Any]]:
+        """Transform events into the Responses API input item format."""
+        items: list[dict[str, Any]] = []
+        for event in self.events:
+            if isinstance(event, MessageEvent):
+                items.append({"role": event.role, "content": event.content})
+            elif isinstance(event, AssistantToolCallEvent):
+                if event.content:
+                    items.append({"role": "assistant", "content": event.content})
+                for call in event.tool_calls:
+                    function = call.get("function", {})
+                    items.append({
+                        "type": "function_call",
+                        "call_id": call["id"],
+                        "name": function["name"],
+                        "arguments": function["arguments"],
+                    })
+            elif isinstance(event, ToolResultEvent):
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": event.tool_call_id,
+                    "output": event.content,
+                })
+        return items
 
     # ─────────────────────────────────────────
     # HELPERS

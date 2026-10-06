@@ -4,10 +4,10 @@ A small Python framework for building streaming LLM agents with tools, skills, a
 
 ## What Is Included
 
-- **Agents**: async streaming agents backed by an OpenAI-compatible client.
+- **Agents**: async streaming agents backed by the OpenAI Responses API.
 - **Tools**: Python callables exposed to the model as OpenAI tool schemas.
 - **Skills**: grouped toolsets that an agent can activate during a run.
-- **Conversations**: event-based message history converted to OpenAI-compatible messages.
+- **Conversations**: event-based message history converted to Responses API input items.
 - **Crews**: orchestration for multiple agents with delegation or ask-only collaboration.
 - **Streaming events**: typed events for text deltas, tool calls, tool results, delegation, errors, and final answers.
 
@@ -313,7 +313,7 @@ If you do not provide a custom `skills` section, the framework injects a default
 
 ## Conversations
 
-`Conversation` stores events, not just plain messages. `get_messages()` converts the visible events into OpenAI-compatible message dictionaries.
+`Conversation` stores events, not just plain messages. `get_response_input()` converts visible events into Responses API input items. `get_messages()` remains available for inspecting the event history in chat message form.
 
 ```python
 from agentic_framework import Conversation

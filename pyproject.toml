@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "openai>=1.0.0",
+    "openai>=1.66.0",
     "litellm",
     "discord.py>=2.3.2",
     "python-dotenv>=1.0.0",
