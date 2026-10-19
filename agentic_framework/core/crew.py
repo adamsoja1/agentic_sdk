@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from agentic_framework.core.agent import Agent
-from agentic_framework.core.conversation import Conversation
+from agentic_framework.core.conversation import Conversation, ImageInputs
 from agentic_framework.core.stream_events import (
     DelegationEvent,
     ErrorEvent,
@@ -57,14 +57,15 @@ class Crew:
                     if tool_name not in agent.tools:
                         agent.add_tool(other_agent)
 
-    async def invoke(self, input_message: str):
+    async def invoke(self, input_message: str, *, images: ImageInputs = ()):
         current_agent = self.entrypoint_agent
         transfer_count = 0
 
         while True:
             # FIX: removed _register_agents_as_tools() call from here
 
-            async for event in current_agent.stream(input_message):
+            stream = current_agent.stream(input_message, images=images) if images else current_agent.stream(input_message)
+            async for event in stream:
                 if isinstance(event, TextDeltaEvent):
                     yield event
                 elif isinstance(event, ToolCallStartEvent):
@@ -97,9 +98,9 @@ class Crew:
             if not self.delegate_to_agent:
                 break
 
-    async def get_response(self, input_message: str) -> str:
+    async def get_response(self, input_message: str, *, images: ImageInputs = ()) -> str:
         final_answer = ""
-        async for event in self.invoke(input_message):
+        async for event in self.invoke(input_message, images=images):
             if isinstance(event, FinalAnswerEvent):
                 final_answer = event.answer
         return final_answer

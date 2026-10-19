@@ -9,7 +9,7 @@ from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
-from agentic_framework.core.conversation import Conversation
+from agentic_framework.core.conversation import Conversation, ImageInputs
 from agentic_framework.core.prompting import AgentPrompt, PromptContent, PromptTemplate
 from agentic_framework.tools.base import BaseTool, Skill
 from agentic_framework.core.stream_events import (
@@ -323,7 +323,7 @@ class Agent:
         target.conversation = Conversation()
         target.conversation.system_prompt = original_conversation.system_prompt
         try:
-            result = await target.invoke(question)
+            result = await target.invoke(question, images=self.conversation.get_latest_user_images())
         finally:
             target.conversation = original_conversation
 
@@ -358,12 +358,12 @@ class Agent:
                 return parsed, clean
             raise
 
-    async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
+    async def stream(self, user_message: str, *, images: ImageInputs = ()) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
             yield ErrorEvent(agent_name=self.name, error="No OpenAI client configured.")
             return
 
-        self.conversation.add_user_message(user_message)
+        self.conversation.add_user_message(user_message, images=images)
 
         final_answer = ""
         found_answer = False
@@ -556,9 +556,9 @@ class Agent:
 
         yield FinalAnswerEvent(agent_name=self.name, answer=final_answer)
 
-    async def invoke(self, user_message: str) -> str:
+    async def invoke(self, user_message: str, *, images: ImageInputs = ()) -> str:
         answer = ""
-        async for event in self.stream(user_message):
+        async for event in self.stream(user_message, images=images):
             if isinstance(event, FinalAnswerEvent):
                 answer = event.answer
                 logger.info("Agent '%s' produced final answer: %s", self.name, answer)

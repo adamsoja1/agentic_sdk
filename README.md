@@ -538,3 +538,27 @@ python -m twine check dist/*
 ## License
 
 MIT
+
+### Image inputs (0.2.0)
+
+Use a vision-capable model and pass `images` to `Agent.stream`, `Agent.invoke`,
+`Crew.invoke`, `Crew.get_response`, or `Conversation.add_user_message`.
+Text-only calls remain unchanged. Images are forwarded during crew delegation
+and specialist questions.
+
+```python
+from agentic_framework import ImageInput
+
+answer = await agent.invoke(
+    "Compare these images",
+    images=[
+        "https://example.com/photo.png",
+        ImageInput.from_bytes(image_bytes, "image/jpeg", detail="high"),
+    ],
+)
+```
+
+An empty text with images is supported. URLs must be HTTP(S) or image data URLs;
+`ImageInput.from_bytes` supports PNG, JPEG, WEBP, and GIF. The configured provider
+and model must support image inputs in the Responses API. See the
+[API image input guide](https://developers.openai.com/api/docs/guides/images-vision).

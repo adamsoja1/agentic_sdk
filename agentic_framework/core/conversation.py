@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import base64
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Literal, Union
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, Sequence, Union
 
 
 # ─────────────────────────────────────────────────────────────
@@ -16,6 +17,30 @@ Role = Literal["user", "assistant", "tool"]
 # EVENTS (SOURCE OF TRUTH)
 # ─────────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class ImageInput:
+    """An image URL or base64 data URL for a vision-capable model."""
+
+    url: str
+    detail: Literal["auto", "low", "high"] = "auto"
+
+    def __post_init__(self):
+        if not self.url.startswith(("https://", "http://", "data:image/")):
+            raise ValueError("Image URL must be HTTP(S) or an image data URL.")
+        if self.detail not in ("auto", "low", "high"):
+            raise ValueError("Image detail must be auto, low, or high.")
+
+    @classmethod
+    def from_bytes(cls, data: bytes, media_type: str, *, detail: Literal["auto", "low", "high"] = "auto") -> ImageInput:
+        if media_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+            raise ValueError("Unsupported image media type.")
+        encoded = base64.b64encode(data).decode("ascii")
+        return cls(url=f"data:{media_type};base64,{encoded}", detail=detail)
+
+
+ImageInputs = Sequence[ImageInput | str]
+
+
 @dataclass
 class BaseEvent:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -25,6 +50,7 @@ class BaseEvent:
 class MessageEvent(BaseEvent):
     role: Role = "user"
     content: str = ""
+    images: list[ImageInput] = field(default_factory=list)
 
 
 @dataclass
@@ -75,8 +101,9 @@ class Conversation:
     # ADD EVENTS
     # ─────────────────────────────────────────
 
-    def add_user_message(self, content: str) -> None:
-        self.events.append(MessageEvent(role="user", content=content))
+    def add_user_message(self, content: str, *, images: ImageInputs = ()) -> None:
+        normalized = [ImageInput(image) if isinstance(image, str) else image for image in images]
+        self.events.append(MessageEvent(role="user", content=content, images=normalized))
 
     def add_assistant_message(self, content: str) -> None:
         self.events.append(MessageEvent(role="assistant", content=content))
@@ -147,7 +174,7 @@ class Conversation:
                 messages.append(
                     {
                         "role": event.role,
-                        "content": event.content,
+                        "content": self._message_content(event),
                     }
                 )
 
@@ -177,12 +204,32 @@ class Conversation:
 
         return messages
 
+    @staticmethod
+    def _message_content(event: MessageEvent, *, responses: bool = False) -> str | list[dict[str, Any]]:
+        if not event.images:
+            return event.content
+        parts: list[dict[str, Any]] = []
+        if event.content:
+            parts.append({"type": "input_text" if responses else "text", "text": event.content})
+        for image in event.images:
+            if responses:
+                parts.append({"type": "input_image", "image_url": image.url, "detail": image.detail})
+            else:
+                parts.append({"type": "image_url", "image_url": {"url": image.url, "detail": image.detail}})
+        return parts
+
+    def get_latest_user_images(self) -> list[ImageInput]:
+        for event in reversed(self.events):
+            if isinstance(event, MessageEvent) and event.role == "user":
+                return list(event.images)
+        return []
+
     def get_response_input(self) -> list[dict[str, Any]]:
         """Transform events into the Responses API input item format."""
         items: list[dict[str, Any]] = []
         for event in self.events:
             if isinstance(event, MessageEvent):
-                items.append({"role": event.role, "content": event.content})
+                items.append({"role": event.role, "content": self._message_content(event, responses=True)})
             elif isinstance(event, AssistantToolCallEvent):
                 if event.content:
                     items.append({"role": "assistant", "content": event.content})
@@ -211,7 +258,7 @@ class Conversation:
 
     def dump_events(self) -> list[dict[str, Any]]:
         """Debug helper"""
-        return [event.__dict__ for event in self.events]
+        return [asdict(event) for event in self.events]
 
     def get_last_messages(self, n: int) -> list[dict[str, Any]]:
         return self.get_messages()[-n:]
