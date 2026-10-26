@@ -23,13 +23,15 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.66.0",
+]
+
+[project.optional-dependencies]
+integrations = [
     "litellm",
     "discord.py>=2.3.2",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "black",

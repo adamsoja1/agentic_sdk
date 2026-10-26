@@ -562,3 +562,5 @@ An empty text with images is supported. URLs must be HTTP(S) or image data URLs;
 `ImageInput.from_bytes` supports PNG, JPEG, WEBP, and GIF. The configured provider
 and model must support image inputs in the Responses API. See the
 [API image input guide](https://developers.openai.com/api/docs/guides/images-vision).
+
+The core SDK requires only the OpenAI client. For integrations that need LiteLLM, Discord, python-dotenv, or requests, install the optional `agentic-framework[integrations]` extra. Configure logging explicitly with `setup_logging()` when desired; importing the SDK does not configure logging.
