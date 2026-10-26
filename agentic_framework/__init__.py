@@ -4,9 +4,7 @@ from agentic_framework._version import __version__
 __author__ = "Adam Soja"
 __email__ = "your@email.com"
 
-# Set up logging configuration when the package is imported
-from agentic_framework.logging_config import setup_logging
-setup_logging()
+# Applications configure logging explicitly; importing the SDK has no side effects.
 
 from agentic_framework.core.agent import Agent
 from agentic_framework.core.conversation import Conversation, ImageInput, ImageInputs
