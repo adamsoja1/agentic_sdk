@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _default_client = AsyncOpenAI(
     base_url=os.getenv("LLM_PROVIDER", "https://ollama.com/v1"),
-    api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
+    api_key=os.getenv("OPENAI_API_KEY") or "EMPTY",
 )
 
 
